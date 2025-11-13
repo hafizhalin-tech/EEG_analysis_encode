@@ -9,7 +9,8 @@ import seaborn as sns
 from sklearn.model_selection import train_test_split, GridSearchCV
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.metrics import (
-    accuracy_score, precision_score, recall_score, f1_score, confusion_matrix, multilabel_confusion_matrix
+    accuracy_score, precision_score, recall_score, f1_score,
+    confusion_matrix, multilabel_confusion_matrix
 )
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.neighbors import KNeighborsClassifier
@@ -24,9 +25,9 @@ st.set_page_config(page_title="EEG Emotion Classifier", layout="wide")
 st.title("🧠 EEG Emotion Classification Web App")
 st.write("Upload EEG data, select classifier, and explore feature, channel, and parameter analyses interactively.")
 
-# Channel list
-EEG_CHANNELS = ["AF3", "F7", "F3", "FC5", "T7", "P7", "O1", "O2",
-                "P8", "T8", "FC6", "F4", "F8", "AF4"]
+# EEG channel list
+EEG_CHANNELS = ["AF3", "F7", "F3", "FC5", "T7", "P7",
+                "O1", "O2", "P8", "T8", "FC6", "F4", "F8", "AF4"]
 
 # ----------------------------------------------
 # File Upload
@@ -41,7 +42,7 @@ if uploaded_file is not None:
         else:
             df = pd.read_excel(uploaded_file)
 
-        st.success(f"✅ File uploaded successfully! Shape: {df.shape[0]} rows × {df.shape[1]} columns")
+        st.success(f"✅ File uploaded successfully! Shape: {df.shape}")
         st.dataframe(df.head())
 
         # ------------------------------------------
@@ -142,11 +143,10 @@ if uploaded_file is not None:
 
                 # ======== Performance Display ========
                 st.subheader("🏆 Model Performance Metrics")
-                metrics_df = pd.DataFrame({
+                st.table(pd.DataFrame({
                     "Metric": ["Train Accuracy", "Test Accuracy", "Precision", "Recall", "F1-Score"],
                     "Score": [acc_train, acc_test, prec, rec, f1]
-                })
-                st.table(metrics_df)
+                }))
                 st.success(f"✅ Best Parameters: {grid.best_params_}")
 
                 # ======== Confusion Matrix ========
@@ -174,54 +174,44 @@ if uploaded_file is not None:
                 # ======== Hyperparameter Tuning Analysis ========
                 st.subheader("🔍 Hyperparameter Tuning Analysis")
                 grid_df = pd.DataFrame(grid.cv_results_)
-
-                # Display top 10 results
                 top_df = grid_df.sort_values("mean_test_score", ascending=False).head(10)
                 st.dataframe(top_df[["params", "mean_train_score", "mean_test_score"]])
 
-                # Plot parameter tuning
-                params = list(param_grid.keys())
-                if len(params) == 1:
-                    param_name = params[0]
-                    plt.figure(figsize=(6, 4))
-                    plt.plot(grid_df["param_" + param_name], grid_df["mean_test_score"], marker='o')
-                    plt.xlabel(param_name)
-                    plt.ylabel("Mean CV Accuracy")
-                    plt.title(f"{classifier_name} Parameter Tuning")
-                    st.pyplot(plt)
-                elif len(params) == 2:
-                    pivot_table = grid_df.pivot_table(
-                        values="mean_test_score",
-                        index="param_" + params[0],
-                        columns="param_" + params[1]
-                    )
-                    plt.figure(figsize=(6, 4))
-                    sns.heatmap(pivot_table, annot=True, cmap="Blues")
-                    plt.title(f"{classifier_name} Grid Search Accuracy")
-                    st.pyplot(plt)
+                plt.figure(figsize=(6, 4))
+                plt.plot(grid_df["mean_test_score"], marker='o')
+                plt.xlabel("Parameter Combination Index")
+                plt.ylabel("Mean CV Accuracy")
+                plt.title(f"{classifier_name} Hyperparameter Tuning Trend")
+                st.pyplot(plt)
 
-                # ======== Feature Importance ========
-                st.subheader("🌟 Feature Importance")
-                try:
-                    if hasattr(best_model, "feature_importances_"):
-                        importances = best_model.feature_importances_
-                    else:
-                        imp_result = permutation_importance(best_model, X_test, y_test, scoring="accuracy", n_repeats=10)
-                        importances = imp_result.importances_mean
+                # ======== Universal Feature Importance ========
+                st.subheader("🌟 Feature Importance (All Classifiers)")
+                def compute_feature_importance(model, X_train, y_train, X_test, y_test):
+                    """Compute importance for any classifier."""
+                    if hasattr(model, "feature_importances_"):  # Tree-based
+                        return model.feature_importances_
+                    elif hasattr(model, "coef_"):  # Linear models (SVM linear, MLP)
+                        coef = np.abs(model.coef_)
+                        if coef.ndim > 1:
+                            coef = coef.mean(axis=0)
+                        return coef
+                    else:  # KNN, RBF SVM → permutation
+                        perm = permutation_importance(model, X_test, y_test, scoring="accuracy", n_repeats=10, random_state=42)
+                        return perm.importances_mean
 
-                    sorted_idx = np.argsort(importances)[::-1]
-                    plt.figure(figsize=(8, 4))
-                    plt.bar(range(len(importances)), importances[sorted_idx])
-                    plt.xticks(range(len(importances)), np.array(selected_features)[sorted_idx], rotation=90)
-                    plt.title(f"{classifier_name} Feature Importance")
-                    plt.tight_layout()
-                    st.pyplot(plt)
-                except Exception as e:
-                    st.warning(f"⚠️ Feature importance could not be computed: {e}")
+                importances = compute_feature_importance(best_model, X_train, y_train, X_test, y_test)
+                importances = importances / np.sum(importances)
+                sorted_idx = np.argsort(importances)[::-1]
+                plt.figure(figsize=(8, 4))
+                plt.bar(range(len(importances)), importances[sorted_idx])
+                plt.xticks(range(len(importances)), np.array(selected_features)[sorted_idx], rotation=90)
+                plt.title(f"{classifier_name} Feature Importance")
+                plt.tight_layout()
+                st.pyplot(plt)
 
-                # ======== Channel-wise Accuracy ========
-                st.subheader("🧩 Channel-Wise Accuracy Contribution")
-                channel_acc = {}
+                # ======== Channel-wise Accuracy & Contribution ========
+                st.subheader("🧩 Channel-wise Accuracy vs Importance")
+                channel_acc, channel_imp = {}, {}
                 for ch in EEG_CHANNELS:
                     ch_features = [f for f in selected_features if ch in f]
                     if not ch_features:
@@ -237,16 +227,29 @@ if uploaded_file is not None:
                     else:
                         acc_ch = np.mean(np.all(y_test_ch == y_pred_ch, axis=1))
                     channel_acc[ch] = acc_ch
+                    # Sum importance of features belonging to the channel
+                    ch_imp = np.sum([importances[i] for i, f in enumerate(selected_features) if ch in f])
+                    channel_imp[ch] = ch_imp
 
-                if channel_acc:
-                    ch_df = pd.DataFrame(list(channel_acc.items()), columns=["Channel", "Accuracy"])
-                    ch_df = ch_df.sort_values("Accuracy", ascending=False)
-                    st.dataframe(ch_df)
-                    plt.figure(figsize=(8, 4))
-                    sns.barplot(x="Channel", y="Accuracy", data=ch_df, palette="coolwarm")
-                    plt.ylim(0, 1)
-                    plt.title("Channel-wise Classification Accuracy")
-                    st.pyplot(plt)
+                ch_df = pd.DataFrame({
+                    "Channel": list(channel_acc.keys()),
+                    "Accuracy": list(channel_acc.values()),
+                    "Importance": [channel_imp[ch] for ch in channel_acc.keys()]
+                }).sort_values("Accuracy", ascending=False)
+
+                st.dataframe(ch_df)
+
+                # Combined plot
+                fig, ax1 = plt.subplots(figsize=(10, 6))
+                sns.barplot(x="Channel", y="Accuracy", data=ch_df, color="skyblue", ax=ax1)
+                ax1.set_ylabel("Accuracy", color="blue")
+                ax1.set_ylim(0, 1)
+                ax2 = ax1.twinx()
+                sns.lineplot(x="Channel", y="Importance", data=ch_df, color="red", marker="o", ax=ax2)
+                ax2.set_ylabel("Feature Importance", color="red")
+                plt.title(f"{classifier_name} - Channel Accuracy vs Feature Importance")
+                plt.tight_layout()
+                st.pyplot(fig)
 
             except Exception as e:
                 st.error(f"❌ Error during classification: {e}")
@@ -255,4 +258,3 @@ if uploaded_file is not None:
         st.error(f"❌ Error reading file: {e}")
 else:
     st.info("👆 Please upload a CSV or XLSX EEG dataset to start.")
-
