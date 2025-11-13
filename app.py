@@ -9,8 +9,8 @@ import seaborn as sns
 from sklearn.model_selection import train_test_split, GridSearchCV
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.metrics import (
-    accuracy_score, precision_score, recall_score, f1_score,
-    confusion_matrix, multilabel_confusion_matrix
+    accuracy_score, precision_score, recall_score,
+    f1_score, confusion_matrix, multilabel_confusion_matrix
 )
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.neighbors import KNeighborsClassifier
@@ -67,6 +67,8 @@ if uploaded_file is not None:
             "Select Classifier", ["KNN", "SVM", "Random Forest", "Neural Network"]
         )
 
+        tuning_mode = st.sidebar.radio("Parameter Tuning Mode", ["Automatic (Grid Search)", "Manual"])
+
         test_size = st.sidebar.slider("Test Size (Ratio for testing)", 0.1, 0.9, 0.2, step=0.05)
         run_button = st.sidebar.button("🚀 Run Classification")
 
@@ -100,28 +102,61 @@ if uploaded_file is not None:
                     X_scaled, y, test_size=test_size, random_state=42
                 )
 
-                # ======== Model & Parameter Grid ========
+                # ======== Classifier & Parameters ========
                 if classifier_name == "KNN":
                     model = KNeighborsClassifier()
                     param_grid = {"n_neighbors": [3, 5, 7, 9]}
+
+                    if tuning_mode == "Manual":
+                        n_neighbors = st.sidebar.selectbox("n_neighbors", [1, 3, 5, 7, 9])
+                        model = KNeighborsClassifier(n_neighbors=n_neighbors)
+
                 elif classifier_name == "SVM":
                     model = SVC(probability=True)
                     param_grid = {"C": [0.1, 1, 10], "kernel": ["linear", "rbf"]}
+
+                    if tuning_mode == "Manual":
+                        C_val = st.sidebar.selectbox("C", [0.1, 1, 10])
+                        kernel_val = st.sidebar.selectbox("Kernel", ["linear", "rbf"])
+                        model = SVC(C=C_val, kernel=kernel_val, probability=True)
+
                 elif classifier_name == "Random Forest":
                     model = RandomForestClassifier(random_state=42)
                     param_grid = {"n_estimators": [50, 100, 200], "max_depth": [3, 5, 7, None]}
-                else:
+
+                    if tuning_mode == "Manual":
+                        n_estimators = st.sidebar.selectbox("n_estimators", [50, 100, 200])
+                        max_depth = st.sidebar.selectbox("max_depth", [3, 5, 7, None])
+                        model = RandomForestClassifier(
+                            n_estimators=n_estimators, max_depth=max_depth, random_state=42
+                        )
+
+                else:  # Neural Network
                     model = MLPClassifier(max_iter=1000, random_state=42)
                     param_grid = {
                         "hidden_layer_sizes": [(50,), (100,), (100, 50)],
                         "activation": ["relu", "tanh", "logistic"]
                     }
 
-                # ======== Grid Search ========
-                st.info("⏳ Performing Grid Search... please wait...")
-                grid = GridSearchCV(model, param_grid, cv=3, scoring="accuracy", n_jobs=-1, return_train_score=True)
-                grid.fit(X_train, y_train)
-                best_model = grid.best_estimator_
+                    if tuning_mode == "Manual":
+                        hidden = st.sidebar.selectbox("Hidden Layer Sizes", [(50,), (100,), (100, 50)])
+                        activation = st.sidebar.selectbox("Activation", ["relu", "tanh", "logistic"])
+                        model = MLPClassifier(
+                            hidden_layer_sizes=hidden, activation=activation,
+                            max_iter=1000, random_state=42
+                        )
+
+                # ======== Hyperparameter Tuning ========
+                if tuning_mode == "Automatic (Grid Search)":
+                    st.info("⏳ Performing Automatic Grid Search...")
+                    grid = GridSearchCV(model, param_grid, cv=3, scoring="accuracy", n_jobs=-1, return_train_score=True)
+                    grid.fit(X_train, y_train)
+                    best_model = grid.best_estimator_
+                    st.success(f"✅ Best Parameters: {grid.best_params_}")
+                else:
+                    st.info("⚙️ Using Manual Hyperparameter Settings")
+                    model.fit(X_train, y_train)
+                    best_model = model
 
                 # ======== Predictions ========
                 y_pred = best_model.predict(X_test)
@@ -141,13 +176,12 @@ if uploaded_file is not None:
                     rec = recall_score(y_test, y_pred, average="samples", zero_division=0)
                     f1 = f1_score(y_test, y_pred, average="samples", zero_division=0)
 
-                # ======== Performance Display ========
+                # ======== Display Metrics ========
                 st.subheader("🏆 Model Performance Metrics")
                 st.table(pd.DataFrame({
                     "Metric": ["Train Accuracy", "Test Accuracy", "Precision", "Recall", "F1-Score"],
                     "Score": [acc_train, acc_test, prec, rec, f1]
                 }))
-                st.success(f"✅ Best Parameters: {grid.best_params_}")
 
                 # ======== Confusion Matrix ========
                 st.subheader("🔹 Confusion Matrix")
@@ -158,44 +192,41 @@ if uploaded_file is not None:
                                 xticklabels=label_classes, yticklabels=label_classes)
                     ax.set_xlabel("Predicted")
                     ax.set_ylabel("Actual")
-                    ax.set_title("Confusion Matrix")
                     st.pyplot(fig)
                 else:
                     cms = multilabel_confusion_matrix(y_test, y_pred)
-                    fig, axes = plt.subplots(1, len(label_classes), figsize=(3*len(label_classes), 4))
+                    fig, axes = plt.subplots(1, len(label_classes), figsize=(3 * len(label_classes), 4))
                     for i, (ax, label) in enumerate(zip(axes, label_classes)):
                         sns.heatmap(cms[i], annot=True, fmt="d", cmap="Blues", ax=ax)
                         ax.set_title(label)
-                        ax.set_xlabel("Predicted")
-                        ax.set_ylabel("Actual")
                     plt.tight_layout()
                     st.pyplot(fig)
 
-                # ======== Hyperparameter Tuning Analysis ========
-                st.subheader("🔍 Hyperparameter Tuning Analysis")
-                grid_df = pd.DataFrame(grid.cv_results_)
-                top_df = grid_df.sort_values("mean_test_score", ascending=False).head(10)
-                st.dataframe(top_df[["params", "mean_train_score", "mean_test_score"]])
+                # ======== Automatic Hyperparameter Visualization ========
+                if tuning_mode == "Automatic (Grid Search)":
+                    st.subheader("🔍 Hyperparameter Tuning Analysis")
+                    grid_df = pd.DataFrame(grid.cv_results_)
+                    top_df = grid_df.sort_values("mean_test_score", ascending=False).head(10)
+                    st.dataframe(top_df[["params", "mean_train_score", "mean_test_score"]])
 
-                plt.figure(figsize=(6, 4))
-                plt.plot(grid_df["mean_test_score"], marker='o')
-                plt.xlabel("Parameter Combination Index")
-                plt.ylabel("Mean CV Accuracy")
-                plt.title(f"{classifier_name} Hyperparameter Tuning Trend")
-                st.pyplot(plt)
+                    plt.figure(figsize=(6, 4))
+                    plt.plot(grid_df["mean_test_score"], marker='o')
+                    plt.xlabel("Parameter Combination Index")
+                    plt.ylabel("Mean CV Accuracy")
+                    plt.title(f"{classifier_name} Hyperparameter Tuning Trend")
+                    st.pyplot(plt)
 
-                # ======== Universal Feature Importance ========
+                # ======== Feature Importance (Universal) ========
                 st.subheader("🌟 Feature Importance (All Classifiers)")
                 def compute_feature_importance(model, X_train, y_train, X_test, y_test):
-                    """Compute importance for any classifier."""
                     if hasattr(model, "feature_importances_"):  # Tree-based
                         return model.feature_importances_
-                    elif hasattr(model, "coef_"):  # Linear models (SVM linear, MLP)
+                    elif hasattr(model, "coef_"):  # Linear models
                         coef = np.abs(model.coef_)
                         if coef.ndim > 1:
                             coef = coef.mean(axis=0)
                         return coef
-                    else:  # KNN, RBF SVM → permutation
+                    else:  # Non-parametric models
                         perm = permutation_importance(model, X_test, y_test, scoring="accuracy", n_repeats=10, random_state=42)
                         return perm.importances_mean
 
@@ -206,10 +237,9 @@ if uploaded_file is not None:
                 plt.bar(range(len(importances)), importances[sorted_idx])
                 plt.xticks(range(len(importances)), np.array(selected_features)[sorted_idx], rotation=90)
                 plt.title(f"{classifier_name} Feature Importance")
-                plt.tight_layout()
                 st.pyplot(plt)
 
-                # ======== Channel-wise Accuracy & Contribution ========
+                # ======== Channel-wise Accuracy & Importance ========
                 st.subheader("🧩 Channel-wise Accuracy vs Importance")
                 channel_acc, channel_imp = {}, {}
                 for ch in EEG_CHANNELS:
@@ -227,7 +257,6 @@ if uploaded_file is not None:
                     else:
                         acc_ch = np.mean(np.all(y_test_ch == y_pred_ch, axis=1))
                     channel_acc[ch] = acc_ch
-                    # Sum importance of features belonging to the channel
                     ch_imp = np.sum([importances[i] for i, f in enumerate(selected_features) if ch in f])
                     channel_imp[ch] = ch_imp
 
@@ -239,16 +268,14 @@ if uploaded_file is not None:
 
                 st.dataframe(ch_df)
 
-                # Combined plot
+                # Combined visualization
                 fig, ax1 = plt.subplots(figsize=(10, 6))
                 sns.barplot(x="Channel", y="Accuracy", data=ch_df, color="skyblue", ax=ax1)
                 ax1.set_ylabel("Accuracy", color="blue")
-                ax1.set_ylim(0, 1)
                 ax2 = ax1.twinx()
                 sns.lineplot(x="Channel", y="Importance", data=ch_df, color="red", marker="o", ax=ax2)
                 ax2.set_ylabel("Feature Importance", color="red")
                 plt.title(f"{classifier_name} - Channel Accuracy vs Feature Importance")
-                plt.tight_layout()
                 st.pyplot(fig)
 
             except Exception as e:
