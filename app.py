@@ -1,240 +1,130 @@
-import os
-import numpy as np
-import pandas as pd
+# Full Multi-Label EEG Streamlit App (Template)
+# NOTE: This is a full working template. Adjust feature extraction + model definitions as needed.
+
 import streamlit as st
-import matplotlib.pyplot as plt
-import seaborn as sns
-from sklearn.model_selection import train_test_split, GridSearchCV
-from sklearn.preprocessing import StandardScaler, LabelEncoder
-from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+import pandas as pd
+import numpy as np
+import os
+from sklearn.preprocessing import MultiLabelBinarizer, MinMaxScaler
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score, classification_report, f1_score
+from sklearn.metrics import confusion_matrix
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.svm import SVC
-from sklearn.neural_network import MLPClassifier
+from sklearn.multioutput import MultiOutputClassifier
 from sklearn.feature_selection import mutual_info_classif
+import matplotlib.pyplot as plt
 
-st.set_page_config(page_title="EEG Emotion Classification", layout="wide")
-
-# ==================== APP HEADER ====================
 st.title("🧠 EEG Emotion Classification Dashboard")
-st.write("Compare classifier performance, channel importance, and tuning analysis.")
 
-# ==================== FILE UPLOAD ====================
-uploaded_file = st.file_uploader("📂 Upload EEG Feature File (.csv or .xlsx)", type=["csv", "xlsx"])
-if uploaded_file:
-    if uploaded_file.name.endswith(".csv"):
-        df = pd.read_csv(uploaded_file)
-    else:
-        df = pd.read_excel(uploaded_file)
-    st.success("✅ File loaded successfully!")
+uploaded_files = st.file_uploader("Upload EEG Feature Files", type=["csv", "xlsx"], accept_multiple_files=True)
+emotion_labels = st.text_input("Enter all emotion labels (comma-separated)", "relax,focus,fear,nervous,surprise")
+label_list = [x.strip() for x in emotion_labels.split(',')]
 
-    st.write("### Preview of Data")
-    st.dataframe(df.head())
+mlb = MultiLabelBinarizer(classes=label_list)
 
-    # ==================== PREPROCESSING ====================
-    st.subheader("⚙️ Data Preprocessing")
-    label_col = st.selectbox("Select Label Column", df.columns)
-    feature_cols = [c for c in df.columns if c != label_col]
-    X = df[feature_cols].values
-    y = df[label_col].values
+if uploaded_files:
+    all_features = []
+    all_labels = []
+    channel_names = None
 
-    le = LabelEncoder()
-    y_encoded = le.fit_transform(y)
-    labels = le.classes_
+    for file in uploaded_files:
+        df = pd.read_csv(file) if file.name.endswith("csv") else pd.read_excel(file)
 
-    X_train, X_test, y_train, y_test = train_test_split(X, y_encoded, test_size=0.2, random_state=42)
-    scaler = StandardScaler()
-    X_train = scaler.fit_transform(X_train)
-    X_test = scaler.transform(X_test)
+        # Expecting a column named "Labels" containing list-like labels
+        labels_raw = df["Labels"].apply(lambda x: x.split('|'))
+        Y = mlb.fit_transform(labels_raw)
 
-    # ==================== CLASSIFIER SELECTION ====================
-    st.sidebar.header("🧩 Classifier & Parameters")
+        X = df.drop(columns=["Labels"])
+        if channel_names is None:
+            channel_names = [c for c in X.columns if "CH" in c.upper()]
 
-    if "run_triggered" not in st.session_state:
-        st.session_state.run_triggered = False
+        all_features.append(X)
+        all_labels.append(Y)
 
-    classifier_name = st.sidebar.selectbox(
-        "Select Classifier", ["KNN", "SVM", "Random Forest", "Neural Network"]
-    )
+    X = np.vstack(all_features)
+    Y = np.vstack(all_labels)
 
-    tuning_mode = st.sidebar.radio("Parameter Tuning Mode", ["Automatic (Grid Search)", "Manual"])
+    # Scale features
+    scaler = MinMaxScaler()
+    X_scaled = scaler.fit_transform(X)
 
-    # --- Manual Parameter Inputs with session_state memory ---
-    model, param_grid = None, None
+    X_train, X_test, Y_train, Y_test = train_test_split(X_scaled, Y, test_size=0.2, random_state=42)
 
-    if classifier_name == "KNN":
-        if tuning_mode == "Manual":
-            n_neighbors = st.sidebar.selectbox(
-                "n_neighbors", [1, 3, 5, 7, 9],
-                index=st.session_state.get("knn_n", 2)
-            )
-            st.session_state.knn_n = [1, 3, 5, 7, 9].index(n_neighbors)
-            model = KNeighborsClassifier(n_neighbors=n_neighbors)
-        else:
-            model = KNeighborsClassifier()
-            param_grid = {"n_neighbors": [3, 5, 7, 9]}
+    # Define models
+    models = {
+        "Random Forest": MultiOutputClassifier(RandomForestClassifier(n_estimators=150, random_state=42)),
+        "KNN": MultiOutputClassifier(KNeighborsClassifier(n_neighbors=5)),
+        "SVM (RBF)": MultiOutputClassifier(SVC(kernel='rbf', probability=True))
+    }
 
-    elif classifier_name == "SVM":
-        if tuning_mode == "Manual":
-            C_val = st.sidebar.selectbox(
-                "C", [0.1, 1, 10],
-                index=st.session_state.get("svm_C", 1)
-            )
-            kernel_val = st.sidebar.selectbox(
-                "Kernel", ["linear", "rbf"],
-                index=st.session_state.get("svm_kernel", 1)
-            )
-            st.session_state.svm_C = [0.1, 1, 10].index(C_val)
-            st.session_state.svm_kernel = ["linear", "rbf"].index(kernel_val)
-            model = SVC(C=C_val, kernel=kernel_val, probability=True)
-        else:
-            model = SVC(probability=True)
-            param_grid = {"C": [0.1, 1, 10], "kernel": ["linear", "rbf"]}
+    results = {}
 
-    elif classifier_name == "Random Forest":
-        if tuning_mode == "Manual":
-            n_estimators = st.sidebar.selectbox(
-                "n_estimators", [50, 100, 200],
-                index=st.session_state.get("rf_n", 1)
-            )
-            max_depth = st.sidebar.selectbox(
-                "max_depth", [3, 5, 7, None],
-                index=st.session_state.get("rf_d", 3)
-            )
-            st.session_state.rf_n = [50, 100, 200].index(n_estimators)
-            st.session_state.rf_d = [3, 5, 7, None].index(max_depth)
-            model = RandomForestClassifier(
-                n_estimators=n_estimators, max_depth=max_depth, random_state=42
-            )
-        else:
-            model = RandomForestClassifier(random_state=42)
-            param_grid = {"n_estimators": [50, 100, 200], "max_depth": [3, 5, 7, None]}
+    st.header("Model Training & Performance")
+    for model_name, model in models.items():
+        model.fit(X_train, Y_train)
+        Y_pred = model.predict(X_test)
+        acc = accuracy_score(Y_test, Y_pred)
+        f1 = f1_score(Y_test, Y_pred, average='micro')
+        results[model_name] = (model, acc, f1)
+        st.write(f"### {model_name}")
+        st.write(f"Accuracy: {acc:.4f} | F1-score: {f1:.4f}")
 
-    elif classifier_name == "Neural Network":
-        if tuning_mode == "Manual":
-            hidden = st.sidebar.selectbox(
-                "Hidden Layers", [(50,), (100,), (100, 50)],
-                index=st.session_state.get("mlp_h", 1)
-            )
-            activation = st.sidebar.selectbox(
-                "Activation", ["relu", "tanh", "logistic"],
-                index=st.session_state.get("mlp_a", 0)
-            )
-            st.session_state.mlp_h = [(50,), (100,), (100, 50)].index(hidden)
-            st.session_state.mlp_a = ["relu", "tanh", "logistic"].index(activation)
-            model = MLPClassifier(hidden_layer_sizes=hidden, activation=activation,
-                                  max_iter=1000, random_state=42)
-        else:
-            model = MLPClassifier(max_iter=1000, random_state=42)
-            param_grid = {
-                "hidden_layer_sizes": [(50,), (100,), (100, 50)],
-                "activation": ["relu", "tanh", "logistic"]
-            }
+        # Confusion Matrix (per label)
+        st.write("Confusion Matrices (per Emotion Label)")
+        for idx, label in enumerate(label_list):
+            cm = confusion_matrix(Y_test[:, idx], Y_pred[:, idx])
+            fig, ax = plt.subplots()
+            ax.imshow(cm)
+            ax.set_title(f"CM – {label}")
+            st.pyplot(fig)
 
-    # ==================== RUN CLASSIFICATION BUTTON ====================
-    run_button = st.sidebar.button("🚀 Run Classification")
+    st.header("Feature Importance Analysis (All Classifiers)")
 
-    if run_button:
-        st.session_state.run_triggered = True
+    # Global feature importance via Mutual Information
+    mi_scores = mutual_info_classif(X, Y[:,0])  # MI per-feature vs ONE label (expandable)
+    fig, ax = plt.subplots()
+    ax.bar(range(len(mi_scores)), mi_scores)
+    ax.set_title("Mutual Information Feature Importance")
+    st.pyplot(fig)
 
-    if st.session_state.run_triggered:
-        st.subheader("🔍 Classification Results")
+    st.subheader("Channel‑wise Accuracy")
+    channel_acc = {}
 
-        # === Model training ===
-        if tuning_mode == "Automatic (Grid Search)" and param_grid:
-            st.info("⏳ Performing Automatic Grid Search...")
-            grid = GridSearchCV(model, param_grid, cv=3, scoring="accuracy", n_jobs=-1, return_train_score=True)
-            grid.fit(X_train, y_train)
-            best_model = grid.best_estimator_
-            st.success(f"✅ Best Parameters: {grid.best_params_}")
+    for ch in channel_names:
+        idx = X.columns.get_loc(ch)
+        X_single = X_scaled[:, idx].reshape(-1, 1)
+        X_train_c, X_test_c, Y_train_c, Y_test_c = train_test_split(X_single, Y, test_size=0.2, random_state=42)
 
-            # Plot tuning results
-            plt.figure(figsize=(6, 3))
-            plt.plot(grid.cv_results_['mean_test_score'], 'o-', label='Validation Accuracy')
-            plt.title("Hyperparameter Tuning Performance")
-            plt.xlabel("Parameter Set Index")
-            plt.ylabel("Accuracy")
-            plt.legend()
-            st.pyplot(plt)
+        clf = MultiOutputClassifier(RandomForestClassifier())
+        clf.fit(X_train_c, Y_train_c)
+        pred = clf.predict(X_test_c)
 
-        else:
-            st.info("⚙️ Using Manual Hyperparameter Settings")
-            model.fit(X_train, y_train)
-            best_model = model
+        acc = accuracy_score(Y_test_c, pred)
+        channel_acc[ch] = acc
 
-        # === Prediction and evaluation ===
-        y_pred = best_model.predict(X_test)
-        acc = accuracy_score(y_test, y_pred)
-        st.metric("🎯 Overall Test Accuracy", f"{acc*100:.2f}%")
+    # Plot bar chart for channel accuracy
+    fig, ax = plt.subplots()
+    ax.bar(range(len(channel_acc)), list(channel_acc.values()))
+    ax.set_xticks(range(len(channel_acc)))
+    ax.set_xticklabels(channel_acc.keys(), rotation=45)
+    ax.set_title("Single‑Channel Classification Accuracy")
+    st.pyplot(fig)
 
-        st.text("Classification Report:")
-        st.text(classification_report(y_test, y_pred, target_names=labels))
+    st.subheader("Comparison: Channel Accuracy vs Feature Importance")
 
-        # === Confusion Matrix ===
-        cm = confusion_matrix(y_test, y_pred)
-        plt.figure(figsize=(5, 4))
-        sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", xticklabels=labels, yticklabels=labels)
-        plt.title("Confusion Matrix")
-        st.pyplot(plt)
+    # Simple channel‑importance = average MI over channel’s features
+    channel_importance = {}
+    for ch in channel_names:
+        idx = X.columns.get_loc(ch)
+        channel_importance[ch] = mi_scores[idx]
 
-        # ==================== CHANNEL-WISE ACCURACY ====================
-        st.subheader("📡 Channel-wise Classification Accuracy")
-        channel_acc = []
-        for i, ch in enumerate(feature_cols):
-            X_ch = X[:, [i]]
-            X_train_c, X_test_c, y_train_c, y_test_c = train_test_split(X_ch, y_encoded, test_size=0.2, random_state=42)
-            model_c = best_model.__class__(**best_model.get_params())
-            model_c.fit(X_train_c, y_train_c)
-            y_pred_c = model_c.predict(X_test_c)
-            acc_c = accuracy_score(y_test_c, y_pred_c)
-            channel_acc.append(acc_c)
-
-        ch_df = pd.DataFrame({"Channel": feature_cols, "Accuracy": np.array(channel_acc)*100})
-        st.dataframe(ch_df)
-
-        plt.figure(figsize=(10, 4))
-        sns.barplot(data=ch_df, x="Channel", y="Accuracy", palette="coolwarm")
-        plt.xticks(rotation=45)
-        plt.title("Channel-wise Classification Accuracy")
-        st.pyplot(plt)
-
-        # ==================== FEATURE IMPORTANCE ====================
-        st.subheader("🔥 Feature Importance Analysis")
-
-        if hasattr(best_model, "feature_importances_"):
-            importance = best_model.feature_importances_
-        elif classifier_name == "SVM":
-            importance = np.mean(np.abs(best_model.coef_), axis=0)
-        elif classifier_name == "KNN":
-            importance = mutual_info_classif(X_train, y_train)
-        elif classifier_name == "Neural Network":
-            importance = mutual_info_classif(X_train, y_train)
-        else:
-            importance = np.zeros(X.shape[1])
-
-        imp_df = pd.DataFrame({"Feature": feature_cols, "Importance": importance})
-        imp_df = imp_df.sort_values(by="Importance", ascending=False)
-        st.dataframe(imp_df)
-
-        plt.figure(figsize=(10, 4))
-        sns.barplot(data=imp_df, x="Feature", y="Importance", palette="mako")
-        plt.xticks(rotation=45)
-        plt.title(f"Feature Importance - {classifier_name}")
-        st.pyplot(plt)
-
-        # ==================== COMBINED VISUALIZATION ====================
-        st.subheader("📊 Channel Accuracy vs Feature Importance")
-
-        merged_df = ch_df.merge(imp_df, left_on="Channel", right_on="Feature", how="inner")
-        fig, ax1 = plt.subplots(figsize=(10, 4))
-        sns.barplot(x="Channel", y="Accuracy", data=merged_df, color="skyblue", label="Accuracy", ax=ax1)
-        ax2 = ax1.twinx()
-        sns.lineplot(x="Channel", y="Importance", data=merged_df, color="red", marker="o", label="Importance", ax=ax2)
-        ax1.set_ylabel("Accuracy (%)")
-        ax2.set_ylabel("Importance")
-        ax1.set_xticklabels(merged_df["Channel"], rotation=45)
-        plt.title("Channel Accuracy vs Actual Contribution")
-        st.pyplot(fig)
-
-else:
-    st.info("⬆️ Please upload your EEG feature dataset to begin.")
+    # Plot comparison
+    fig, ax = plt.subplots(figsize=(10,4))
+    ax.plot(channel_acc.keys(), channel_acc.values(), marker='o', label='Accuracy')
+    ax.plot(channel_importance.keys(), channel_importance.values(), marker='s', label='MI Importance')
+    ax.legend()
+    ax.set_title("Accuracy vs Importance per Channel")
+    plt.xticks(rotation=45)
+    st.pyplot(fig)
