@@ -1,130 +1,299 @@
-# Full Multi-Label EEG Streamlit App (Template)
-# NOTE: This is a full working template. Adjust feature extraction + model definitions as needed.
-
-import streamlit as st
-import pandas as pd
-import numpy as np
 import os
-from sklearn.preprocessing import MultiLabelBinarizer, MinMaxScaler
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score, classification_report, f1_score
-from sklearn.metrics import confusion_matrix
+import numpy as np
+import pandas as pd
+import streamlit as st
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import (
+    accuracy_score, classification_report, confusion_matrix,
+    hamming_loss, f1_score
+)
+from sklearn.feature_selection import mutual_info_classif
+
+# Classifiers
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.svm import SVC
-from sklearn.multioutput import MultiOutputClassifier
-from sklearn.feature_selection import mutual_info_classif
-import matplotlib.pyplot as plt
+from sklearn.neural_network import MLPClassifier
+from sklearn.multiclass import OneVsRestClassifier
 
-st.title("🧠 EEG Emotion Classification Dashboard")
 
-uploaded_files = st.file_uploader("Upload EEG Feature Files", type=["csv", "xlsx"], accept_multiple_files=True)
-emotion_labels = st.text_input("Enter all emotion labels (comma-separated)", "relax,focus,fear,nervous,surprise")
-label_list = [x.strip() for x in emotion_labels.split(',')]
+# ==============================
+# STREAMLIT PAGE SETUP
+# ==============================
+st.set_page_config(page_title="EEG Multi-Label Emotion Classifier", layout="wide")
 
-mlb = MultiLabelBinarizer(classes=label_list)
+st.title("🧠 EEG Multi-Label Emotion Classification Dashboard")
+st.write("Supports multi-hot encoded labels, channel analysis, tuning & feature importance.")
 
-if uploaded_files:
-    all_features = []
-    all_labels = []
-    channel_names = None
 
-    for file in uploaded_files:
-        df = pd.read_csv(file) if file.name.endswith("csv") else pd.read_excel(file)
+# ==============================
+# FILE UPLOAD
+# ==============================
+uploaded_file = st.file_uploader("📂 Upload EEG Feature File (.csv or .xlsx)", type=["csv", "xlsx"])
 
-        # Expecting a column named "Labels" containing list-like labels
-        labels_raw = df["Labels"].apply(lambda x: x.split('|'))
-        Y = mlb.fit_transform(labels_raw)
+if uploaded_file:
+    # Load data
+    if uploaded_file.name.endswith(".csv"):
+        df = pd.read_csv(uploaded_file)
+    else:
+        df = pd.read_excel(uploaded_file)
 
-        X = df.drop(columns=["Labels"])
-        if channel_names is None:
-            channel_names = [c for c in X.columns if "CH" in c.upper()]
+    st.success("📁 File loaded!")
+    st.dataframe(df.head())
 
-        all_features.append(X)
-        all_labels.append(Y)
+    # ==============================
+    # SELECT MULTI-LABEL COLUMNS
+    # ==============================
+    st.subheader("🎭 Select Emotion Label Columns (multi-label)")
 
-    X = np.vstack(all_features)
-    Y = np.vstack(all_labels)
+    # Auto-detect possible label columns (binary columns)
+    possible_label_cols = [c for c in df.columns if df[c].nunique() <= 5 and df[c].dtype != "float64"]
 
-    # Scale features
-    scaler = MinMaxScaler()
-    X_scaled = scaler.fit_transform(X)
+    label_cols = st.multiselect(
+        "Select Label Columns:",
+        options=df.columns,
+        default=possible_label_cols
+    )
 
-    X_train, X_test, Y_train, Y_test = train_test_split(X_scaled, Y, test_size=0.2, random_state=42)
+    if len(label_cols) == 0:
+        st.warning("⚠ Please select at least one label column.")
+        st.stop()
 
-    # Define models
-    models = {
-        "Random Forest": MultiOutputClassifier(RandomForestClassifier(n_estimators=150, random_state=42)),
-        "KNN": MultiOutputClassifier(KNeighborsClassifier(n_neighbors=5)),
-        "SVM (RBF)": MultiOutputClassifier(SVC(kernel='rbf', probability=True))
-    }
+    st.success(f"Selected label columns: {label_cols}")
 
-    results = {}
+    # Feature matrix
+    feature_cols = [c for c in df.columns if c not in label_cols]
 
-    st.header("Model Training & Performance")
-    for model_name, model in models.items():
-        model.fit(X_train, Y_train)
-        Y_pred = model.predict(X_test)
-        acc = accuracy_score(Y_test, Y_pred)
-        f1 = f1_score(Y_test, Y_pred, average='micro')
-        results[model_name] = (model, acc, f1)
-        st.write(f"### {model_name}")
-        st.write(f"Accuracy: {acc:.4f} | F1-score: {f1:.4f}")
+    X = df[feature_cols].values
+    y = df[label_cols].values  # Multi-hot encoded labels
 
-        # Confusion Matrix (per label)
-        st.write("Confusion Matrices (per Emotion Label)")
-        for idx, label in enumerate(label_list):
-            cm = confusion_matrix(Y_test[:, idx], Y_pred[:, idx])
-            fig, ax = plt.subplots()
-            ax.imshow(cm)
-            ax.set_title(f"CM – {label}")
-            st.pyplot(fig)
 
-    st.header("Feature Importance Analysis (All Classifiers)")
+    # ==============================
+    # TRAIN/TEST SPLIT
+    # ==============================
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42
+    )
 
-    # Global feature importance via Mutual Information
-    mi_scores = mutual_info_classif(X, Y[:,0])  # MI per-feature vs ONE label (expandable)
-    fig, ax = plt.subplots()
-    ax.bar(range(len(mi_scores)), mi_scores)
-    ax.set_title("Mutual Information Feature Importance")
-    st.pyplot(fig)
+    scaler = StandardScaler()
+    X_train = scaler.fit_transform(X_train)
+    X_test = scaler.transform(X_test)
 
-    st.subheader("Channel‑wise Accuracy")
-    channel_acc = {}
 
-    for ch in channel_names:
-        idx = X.columns.get_loc(ch)
-        X_single = X_scaled[:, idx].reshape(-1, 1)
-        X_train_c, X_test_c, Y_train_c, Y_test_c = train_test_split(X_single, Y, test_size=0.2, random_state=42)
+    # ==============================
+    # CLASSIFIER SELECTION
+    # ==============================
+    st.sidebar.header("⚙ Classifier Settings")
 
-        clf = MultiOutputClassifier(RandomForestClassifier())
-        clf.fit(X_train_c, Y_train_c)
-        pred = clf.predict(X_test_c)
+    classifier_name = st.sidebar.selectbox(
+        "Select Classifier",
+        ["KNN", "SVM", "Random Forest", "Neural Network"]
+    )
 
-        acc = accuracy_score(Y_test_c, pred)
-        channel_acc[ch] = acc
+    tuning_mode = st.sidebar.radio(
+        "Parameter Tuning Mode",
+        ["Automatic (Grid Search)", "Manual"]
+    )
 
-    # Plot bar chart for channel accuracy
-    fig, ax = plt.subplots()
-    ax.bar(range(len(channel_acc)), list(channel_acc.values()))
-    ax.set_xticks(range(len(channel_acc)))
-    ax.set_xticklabels(channel_acc.keys(), rotation=45)
-    ax.set_title("Single‑Channel Classification Accuracy")
-    st.pyplot(fig)
+    # Build model
+    base_model = None
+    param_grid = None
 
-    st.subheader("Comparison: Channel Accuracy vs Feature Importance")
+    # ------------------- KNN -------------------
+    if classifier_name == "KNN":
+        if tuning_mode == "Manual":
+            k = st.sidebar.slider("n_neighbors", 1, 15, 5)
+            base_model = KNeighborsClassifier(n_neighbors=k)
+        else:
+            base_model = KNeighborsClassifier()
+            param_grid = {"n_neighbors": [3, 5, 7, 9, 11]}
 
-    # Simple channel‑importance = average MI over channel’s features
-    channel_importance = {}
-    for ch in channel_names:
-        idx = X.columns.get_loc(ch)
-        channel_importance[ch] = mi_scores[idx]
+    # ------------------- SVM -------------------
+    elif classifier_name == "SVM":
+        if tuning_mode == "Manual":
+            Cv = st.sidebar.selectbox("C", [0.1, 1, 10], 1)
+            kernel = st.sidebar.selectbox("Kernel", ["linear", "rbf"], 1)
+            base_model = SVC(C=Cv, kernel=kernel, probability=True)
+        else:
+            base_model = SVC(probability=True)
+            param_grid = {"C": [0.1, 1, 10], "kernel": ["linear", "rbf"]}
 
-    # Plot comparison
-    fig, ax = plt.subplots(figsize=(10,4))
-    ax.plot(channel_acc.keys(), channel_acc.values(), marker='o', label='Accuracy')
-    ax.plot(channel_importance.keys(), channel_importance.values(), marker='s', label='MI Importance')
-    ax.legend()
-    ax.set_title("Accuracy vs Importance per Channel")
-    plt.xticks(rotation=45)
-    st.pyplot(fig)
+    # ------------------- Random Forest -------------------
+    elif classifier_name == "Random Forest":
+        if tuning_mode == "Manual":
+            n_est = st.sidebar.selectbox("n_estimators", [50, 100, 200], 1)
+            depth = st.sidebar.selectbox("max_depth", [3, 5, 7, None], 3)
+            base_model = RandomForestClassifier(
+                n_estimators=n_est, max_depth=depth, random_state=42
+            )
+        else:
+            base_model = RandomForestClassifier(random_state=42)
+            param_grid = {"n_estimators": [50, 100, 200], "max_depth": [3, 5, 7, None]}
+
+    # ------------------- Neural Network -------------------
+    elif classifier_name == "Neural Network":
+        if tuning_mode == "Manual":
+            hidden = st.sidebar.selectbox("Hidden Layers", [(50,), (100,), (100, 50)], 1)
+            activation = st.sidebar.selectbox("Activation", ["relu", "tanh", "logistic"], 0)
+            base_model = MLPClassifier(
+                hidden_layer_sizes=hidden,
+                activation=activation,
+                max_iter=1000,
+                random_state=42
+            )
+        else:
+            base_model = MLPClassifier(max_iter=1000, random_state=42)
+            param_grid = {
+                "hidden_layer_sizes": [(50,), (100,), (100, 50)],
+                "activation": ["relu", "tanh", "logistic"]
+            }
+
+    # One-vs-Rest wrapper for multi-label classification
+    model = OneVsRestClassifier(base_model)
+
+
+    # ==============================
+    # RUN BUTTON
+    # ==============================
+    if st.sidebar.button("🚀 Run Classification"):
+        st.subheader("🔍 Classification Results")
+
+        # -------- Grid Search ----------
+        if tuning_mode == "Automatic (Grid Search)" and param_grid:
+            st.info("⏳ Running Grid Search...")
+
+            grid = GridSearchCV(
+                model, param_grid={"estimator__" + k: v for k, v in param_grid.items()},
+                cv=3, scoring="accuracy", n_jobs=-1
+            )
+            grid.fit(X_train, y_train)
+            model = grid.best_estimator_
+
+            st.success(f"Best Parameters: {grid.best_params_}")
+
+            # Tuning plot
+            plt.figure(figsize=(6, 3))
+            plt.plot(grid.cv_results_["mean_test_score"])
+            plt.title("Hyperparameter Tuning Accuracy")
+            plt.ylabel("Accuracy")
+            plt.xlabel("Parameter Index")
+            st.pyplot(plt)
+
+        else:
+            model.fit(X_train, y_train)
+
+        # -------- Prediction ----------
+        y_pred = model.predict(X_test)
+
+        # Metrics
+        acc = accuracy_score(y_test, np.round(y_pred))
+        f1_micro = f1_score(y_test, y_pred, average="micro")
+        ham = hamming_loss(y_test, y_pred)
+
+        st.metric("🎯 Multi-Label Accuracy", f"{acc*100:.2f}%")
+        st.metric("🔥 F1-Score (micro)", f"{f1_micro*100:.2f}%")
+        st.metric("📉 Hamming Loss", f"{ham:.4f}")
+
+        st.text("Classification Report (per label):")
+        st.text(classification_report(y_test, y_pred, target_names=label_cols))
+
+
+        # ==============================
+        # CONFUSION MATRIX PER LABEL
+        # ==============================
+        st.subheader("🧩 Confusion Matrix (Per Label)")
+
+        for i, label in enumerate(label_cols):
+            cm = confusion_matrix(y_test[:, i], y_pred[:, i])
+
+            plt.figure(figsize=(4, 3))
+            sns.heatmap(cm, annot=True, fmt="d", cmap="Blues")
+            plt.title(f"Confusion Matrix - {label}")
+            plt.xlabel("Predicted")
+            plt.ylabel("True")
+            st.pyplot(plt)
+
+
+        # ==============================
+        # CHANNEL-WISE ACCURACY
+        # ==============================
+        st.subheader("📡 Channel-wise Accuracy (Multi-label)")
+
+        channel_acc = []
+
+        for i, ch in enumerate(feature_cols):
+            X_ch = X[:, [i]]
+            Xc_train, Xc_test, yc_train, yc_test = train_test_split(
+                X_ch, y, test_size=0.2, random_state=42
+            )
+
+            # Rebuild model for single channel
+            model_ch = OneVsRestClassifier(
+                base_model.__class__(**base_model.get_params())
+            )
+            model_ch.fit(Xc_train, yc_train)
+            pred_ch = model_ch.predict(Xc_test)
+
+            # Use micro-F1 as accuracy metric
+            acc_ch = f1_score(yc_test, pred_ch, average="micro")
+            channel_acc.append(acc_ch * 100)
+
+        ch_df = pd.DataFrame({"Channel": feature_cols, "Accuracy": channel_acc})
+        st.dataframe(ch_df)
+
+        plt.figure(figsize=(10, 3))
+        sns.barplot(data=ch_df, x="Channel", y="Accuracy", palette="coolwarm")
+        plt.xticks(rotation=45)
+        plt.title("Single-Channel Multi-Label Accuracy (F1-micro)")
+        st.pyplot(plt)
+
+
+        # ==============================
+        # FEATURE IMPORTANCE (multi-label)
+        # ==============================
+        st.subheader("🔥 Feature Importance (Multi-label)")
+
+        # Random Forest has built-in feature importance
+        if classifier_name == "Random Forest":
+            importance = model.estimators_[0].feature_importances_
+        else:
+            # fallback to mutual info
+            importance = mutual_info_classif(X_train, y_train[:, 0])
+
+        imp_df = pd.DataFrame({"Feature": feature_cols, "Importance": importance})
+        imp_df = imp_df.sort_values("Importance", ascending=False)
+
+        st.dataframe(imp_df)
+
+        plt.figure(figsize=(10, 3))
+        sns.barplot(x="Feature", y="Importance", data=imp_df, palette="mako")
+        plt.xticks(rotation=45)
+        plt.title("Feature Importance")
+        st.pyplot(plt)
+
+
+        # ==============================
+        # COMBINED PLOT
+        # ==============================
+        st.subheader("📊 Channel Accuracy vs Feature Importance")
+
+        merged = ch_df.merge(imp_df, left_on="Channel", right_on="Feature")
+
+        fig, ax1 = plt.subplots(figsize=(10, 3))
+        sns.barplot(x="Channel", y="Accuracy", data=merged, ax=ax1, color="skyblue")
+        ax1.set_ylabel("Accuracy (F1-micro)")
+
+        ax2 = ax1.twinx()
+        sns.lineplot(x="Channel", y="Importance", data=merged, ax=ax2, marker="o", color="red")
+        ax2.set_ylabel("Importance")
+
+        plt.xticks(rotation=45)
+        plt.title("Channel Accuracy vs Feature Importance")
+        st.pyplot(fig)
+
+else:
+    st.info("⬆ Upload a dataset to begin.")
