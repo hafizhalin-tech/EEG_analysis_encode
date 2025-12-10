@@ -291,7 +291,7 @@ if uploaded_file:
         sns.lineplot(x="Channel", y="Importance", data=merged, ax=ax2, marker="o", color="red")
         ax2.set_ylabel("Importance")
 
-        plt.xticks(rotation=90)
+        plt.xticks(rotation=50)
         plt.title("Channel Accuracy vs Feature Importance")
         st.pyplot(fig)
 
